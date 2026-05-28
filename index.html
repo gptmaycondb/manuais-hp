@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Manuais HP">
+<meta name="theme-color" content="#161920">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Manuais HP">
+<title>Central de Manuais HP</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap');
+:root{
+  --bg:#0d0f14;--surface:#161920;--surface2:#1e2230;--border:#2a2f3e;
+  --accent:#0096ff;--accent2:#00d4aa;--text:#e4e8f0;--text-dim:#7a8299;
+  --text-muted:#4a5168;--user-bubble:#1a2744;--ai-bubble:#131a28;--tag-bg:#0d2040;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;display:flex;flex-direction:column;}
+.header{height:56px;padding:0 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--surface);flex-shrink:0;}
+.header-logo{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12px;color:#fff;flex-shrink:0;}
+.header-info{flex:1;min-width:0;}
+.header-title{font-size:14px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.header-sub{font-size:10px;color:var(--text-dim);font-family:'IBM Plex Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.menu-btn{width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--text-dim);flex-shrink:0;}
+.tabs-wrapper{height:48px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;overflow-x:auto;padding:0 12px;gap:4px;scrollbar-width:none;flex-shrink:0;align-items:center;}
+.tabs-wrapper::-webkit-scrollbar{display:none;}
+.tab-pill{flex-shrink:0;padding:6px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;font-size:12px;color:var(--text-dim);transition:all .15s;white-space:nowrap;}
+.tab-pill.active{background:var(--tag-bg);border-color:var(--accent);color:var(--accent);font-weight:600;}
+.tab-pill.guide.active{background:#0d2020;border-color:var(--accent2);color:var(--accent2);}
+.tab-pill.cpmd.active{background:#1a0d2a;border-color:#a855f7;color:#a855f7;}
+.drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:40;opacity:0;pointer-events:none;transition:opacity .25s;}
+.drawer-overlay.open{opacity:1;pointer-events:all;}
+.drawer{position:fixed;top:0;left:0;bottom:0;width:80vw;max-width:300px;background:var(--surface);z-index:50;transform:translateX(-100%);transition:transform .28s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow:hidden;}
+.drawer.open{transform:translateX(0);}
+.drawer-header{padding:16px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+.drawer-model{flex:1;}
+.drawer-label{font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text-dim);letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px;}
+.drawer-name{font-size:14px;font-weight:700;color:var(--text);line-height:1.3;}
+.drawer-type{font-size:10px;color:var(--text-dim);margin-top:2px;}
+.drawer-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:8px;}
+.drawer-tag{font-size:9px;font-family:'IBM Plex Mono',monospace;padding:2px 6px;border-radius:3px;background:var(--tag-bg);border:1px solid #1a3060;color:var(--accent);}
+.drawer-tag.green{background:#0d2020;border-color:#1a4040;color:var(--accent2);}
+.close-btn{width:30px;height:30px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--text-dim);flex-shrink:0;}
+.drawer-topics{flex:1;overflow-y:auto;padding:8px 0;-webkit-overflow-scrolling:touch;}
+.topic-section{padding:4px 16px;}
+.topic-label{font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;margin-top:8px;}
+.topic-chip{display:block;width:100%;text-align:left;padding:10px;background:none;border:1px solid transparent;border-radius:8px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:var(--text-dim);cursor:pointer;margin-bottom:2px;}
+.topic-chip:active{background:var(--surface2);color:var(--text);}
+.chat-area{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);min-height:0;}
+.chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px;-webkit-overflow-scrolling:touch;}
+.welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;gap:12px;padding:24px 16px;}
+.welcome-icon{width:56px;height:56px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:4px;}
+.welcome h2{font-size:17px;font-weight:700;color:var(--text);line-height:1.3;}
+.welcome p{font-size:12px;color:var(--text-dim);max-width:300px;line-height:1.6;}
+.welcome-suggestions{display:flex;flex-direction:column;gap:8px;width:100%;margin-top:4px;}
+.suggestion-btn{padding:11px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text-dim);cursor:pointer;font-family:'IBM Plex Sans',sans-serif;text-align:left;}
+.suggestion-btn:active{background:var(--surface2);border-color:var(--accent);color:var(--accent);}
+.msg{display:flex;gap:8px;max-width:100%;animation:fadeUp .2s ease;}
+.msg.user{flex-direction:row-reverse;align-self:flex-end;}
+.msg.ai{align-self:flex-start;}
+.msg-avatar{width:28px;height:28px;border-radius:7px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:'IBM Plex Mono',monospace;}
+.msg.user .msg-avatar{background:var(--user-bubble);color:var(--accent);border:1px solid #2040a0;}
+.msg.ai .msg-avatar{background:var(--surface2);color:var(--accent2);border:1px solid var(--border);}
+.msg-bubble{padding:10px 13px;border-radius:14px;font-size:13px;line-height:1.6;max-width:calc(100vw - 80px);}
+.msg.user .msg-bubble{background:var(--user-bubble);border:1px solid #2040a0;color:var(--text);border-top-right-radius:4px;}
+.msg.ai .msg-bubble{background:var(--ai-bubble);border:1px solid var(--border);color:var(--text);border-top-left-radius:4px;}
+.msg.ai .msg-bubble strong{color:var(--accent2);font-weight:600;}
+.msg.ai .msg-bubble code{font-family:'IBM Plex Mono',monospace;font-size:11px;background:var(--surface2);padding:1px 4px;border-radius:3px;color:var(--accent);}
+.msg-source{font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text-muted);margin-top:4px;display:flex;align-items:center;gap:3px;}
+.msg-source::before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent2);}
+.typing{display:flex;align-items:center;gap:4px;padding:10px 13px;}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--text-muted);animation:bounce 1.2s infinite;}
+.typing span:nth-child(2){animation-delay:.2s;}
+.typing span:nth-child(3){animation-delay:.4s;}
+@keyframes bounce{0%,80%,100%{transform:translateY(0);opacity:.4;}40%{transform:translateY(-5px);opacity:1;}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+.input-bar{padding:10px 12px;padding-bottom:calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;}
+.input-wrap{display:flex;align-items:flex-end;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:8px 12px;}
+.input-wrap:focus-within{border-color:var(--accent);}
+.input-wrap textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:14px;resize:none;min-height:22px;max-height:100px;line-height:1.5;}
+.input-wrap textarea::placeholder{color:var(--text-muted);}
+.send-btn{width:38px;height:38px;border-radius:10px;background:var(--accent);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-size:17px;}
+.send-btn:active{background:#0080dd;}
+.send-btn:disabled{background:var(--border);cursor:not-allowed;}
+.error-bubble{background:#1a0a10;border:1px solid #4a1020;color:#ff6080;padding:10px 13px;border-radius:10px;font-size:12px;font-family:'IBM Plex Mono',monospace;}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-logo">HP</div>
+  <div class="header-info">
+    <div class="header-title" id="headerTitle">Central de Manuais HP</div>
+    <div class="header-sub" id="headerSub">Selecione um modelo</div>
+  </div>
+  <button class="menu-btn" onclick="openDrawer()">&#9776;</button>
+</div>
+<div class="tabs-wrapper" id="tabsWrapper"></div>
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-header">
+    <div class="drawer-model">
+      <div class="drawer-label">Modelo Ativo</div>
+      <div class="drawer-name" id="drawerName"></div>
+      <div class="drawer-type" id="drawerType"></div>
+      <div class="drawer-tags" id="drawerTags"></div>
+    </div>
+    <button class="close-btn" onclick="closeDrawer()">&#x2715;</button>
+  </div>
+  <div class="drawer-topics" id="drawerTopics"></div>
+</div>
+<div class="chat-area">
+  <div class="chat-messages" id="chatMessages"></div>
+  <div class="input-bar">
+    <div class="input-wrap">
+      <textarea id="userInput" placeholder="Pergunte sobre o modelo..." rows="1"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>&#10148;</button>
+    </div>
+  </div>
+</div>
+<script>
+var API_URL = 'https://manuais-hp.onrender.com/chat';
+
+var MANUALS = [
+  {
+    id: "e52645_guia", tabLabel: "E52645", tabClass: "guide",
+    modelName: "HP LaserJet MFP E52645", modelType: "Guia do Usuario (PT-BR)",
+    tags: ["E52645", "MFP", "Flow"],
+    topics: {
+      "Operacao Basica": ["Como carregar papel nas bandejas?","Como imprimir frente e verso?","Como digitalizar para e-mail?","Como usar o grampeador?"],
+      "Suprimentos": ["Como substituir o cartucho de toner?","Numero de peca do cartucho?","Como substituir o cartucho de grampos?"],
+      "Rede": ["Como configurar o endereco IP?","Como acessar o EWS?","Como configurar Digitalizar para Pasta de Rede?"],
+      "Problemas": ["Como resolver atolamentos de papel?","Problemas de qualidade de impressao","Fax nao esta funcionando","Porta USB nao responde"]
+    },
+    prompt: "Voce e um especialista tecnico na impressora HP LaserJet Managed MFP E52645. Responda APENAS com base no Guia do Usuario desta impressora. Modelos: HP LaserJet Managed MFP E52645 e Flow MFP E52645. Idioma: Portugues Brasileiro. Manual cobre: bandejas de papel, impressao frente/verso, digitalizacao, copia, fax, cartuchos, grampeador, rede, EWS, seguranca, solucao de problemas, atolamentos, qualidade de impressao."
+  },
+  {
+    id: "m501_catalog", tabLabel: "M501/506/507", tabClass: "",
+    modelName: "HP LaserJet M501 / M506 / M507", modelType: "Catalogo de Pecas Service",
+    tags: ["M501", "M506", "M507"],
+    topics: {
+      "Pecas": ["Pecas disponiveis para o M501?","Numero de peca do fusor M506?","Componentes da bandeja de papel"],
+      "Service": ["Procedimento de reparo do M507","Diagnostico de falhas eletricas","Teoria de operacao"],
+      "Substituicao": ["Como trocar o conjunto do fusor?","Rolo de transferencia","Placa formatadora"]
+    },
+    prompt: "Voce e um tecnico especialista em service e pecas HP LaserJet. Responda APENAS sobre: HP LaserJet Pro M501, Enterprise M506, Enterprise M507. Base: Service Parts Catalog HP 2025. Conteudo: pecas, part numbers, teoria de operacao, troubleshooting, reparo. Responda em Portugues Brasileiro."
+  },
+  {
+    id: "m527_catalog", tabLabel: "M527/M528", tabClass: "",
+    modelName: "HP LaserJet MFP M527, M528", modelType: "Catalogo de Pecas Service",
+    tags: ["M527", "M528", "Enterprise"],
+    topics: {
+      "Pecas": ["Pecas do ADF do M527","Componentes do scanner M528","Conjunto de digitalizacao"],
+      "Service": ["Diagnostico do ADF","Calibracao do scanner","Vidro de digitalizacao"],
+      "Substituicao": ["Conjunto de separacao do ADF","Rolo de puxada do alimentador","Placa de controle"]
+    },
+    prompt: "Voce e um tecnico especialista em service HP LaserJet MFP. Responda APENAS sobre: HP LaserJet Enterprise MFP M527 e MFP M528. Base: Service Parts Catalog HP 2025. Conteudo: pecas, part numbers, reparo para MFP, ADF, scanner, fusor. Responda em Portugues Brasileiro."
+  },
+  {
+    id: "e50045_catalog", tabLabel: "E50045/145", tabClass: "",
+    modelName: "HP LaserJet Managed E50045, E50145", modelType: "Catalogo de Pecas Service",
+    tags: ["E50045", "E50145"],
+    topics: {
+      "Pecas": ["Pecas de reposicao do E50045","Part numbers do E50145","Conjunto do fusor gerenciado"],
+      "Service": ["Diagnostico E50045","Motor laser teoria de operacao","Problemas eletricos"],
+      "Substituicao": ["Rolo de transferencia","Cartucho de imagem","Bandejas de alta capacidade"]
+    },
+    prompt: "Voce e um tecnico especialista em service HP LaserJet Managed. Responda APENAS sobre: HP LaserJet Managed E50045 e E50145. Base: Service Parts Catalog HP 2025. Conteudo: pecas, part numbers, teoria de operacao, troubleshooting, componentes. Responda em Portugues Brasileiro."
+  },
+  {
+    id: "e52545_catalog", tabLabel: "E52545/645", tabClass: "",
+    modelName: "HP LaserJet MFP E52545, E52645", modelType: "Catalogo de Pecas Service",
+    tags: ["E52545", "E52645", "MFP"],
+    topics: {
+      "Pecas": ["Pecas MFP E52645 service","Part numbers ADF E52545","Fusor MFP Managed"],
+      "Service": ["Diagnostico MFP E52645","Calibracao do scanner","Reparo avancado"],
+      "Substituicao": ["Conjunto do ADF","Fusor de alta capacidade","Placa de controle principal"]
+    },
+    prompt: "Voce e um tecnico especialista em service HP LaserJet Managed MFP. Responda APENAS sobre: HP LaserJet Managed MFP E52545 e MFP E52645 versao service. Base: Service Parts Catalog HP 2025. Conteudo: pecas, part numbers, teoria de operacao, troubleshooting avancado, ADF, scanner, fusor. Responda em Portugues Brasileiro."
+  },
+  {
+    id: "cpmd", tabLabel: "Codigos de Erro", tabClass: "cpmd",
+    modelName: "Codigos de Erro - Painel de Controle", modelType: "CPMD 2023 - Todos os Modelos",
+    tags: ["M501","M506","M507","M527","M528","E50045","E50145","E52545","E52645"],
+    topics: {
+      "Suprimentos 10xx": ["O que significa o erro 10.xx.xx?","Erro de memoria do cartucho","Cartucho nao reconhecido"],
+      "Atolamentos 13xx": ["Codigo de erro 13.xx.xx - atolamento","Atolamento no alimentador de documentos","Atolamento no fusor"],
+      "Firmware 4xxx": ["Erro 49.xx.xx - falha de firmware","Erro 41.03.xx - misprint","Erro 50.xx.xx - fusor"],
+      "Mensagens Painel": ["O que significa Checking engine?","Mensagem Output Bin Full","Mensagem NON HP Supply Installed"],
+      "Scanner 30xx": ["Erro 30.xx.xx - scanner flatbed","Erro 31.xx.xx - alimentador documentos","Scanner erro de calibracao"]
+    },
+    prompt: "Voce e um especialista em codigos de erro HP LaserJet. Responda APENAS com base no CPMD HP 2023. Modelos: M501, M506, M507, MFP M527, M528, E50045, E50145, MFP E52545, MFP E52645. Conteudo: codigos de erro (estrutura XX.WX.YZ), mensagens do painel, diagnostico e solucao para cada erro, pinos de servico, numeros de peca. Ao responder sobre um codigo informe: componente afetado, descricao e passos para resolver. Responda em Portugues Brasileiro."
+  }
+];
+
+var currentId = MANUALS[0].id;
+var conversations = {};
+MANUALS.forEach(function(m){ conversations[m.id] = []; });
+
+function init(){
+  buildTabs();
+  selectManual(MANUALS[0].id);
+  setupInput();
+}
+
+function buildTabs(){
+  var wrap = document.getElementById('tabsWrapper');
+  MANUALS.forEach(function(m){
+    var btn = document.createElement('button');
+    btn.className = 'tab-pill ' + m.tabClass;
+    btn.id = 'tab-' + m.id;
+    btn.textContent = m.tabLabel;
+    btn.onclick = function(){ selectManual(m.id); };
+    wrap.appendChild(btn);
+  });
+}
+
+function selectManual(id){
+  currentId = id;
+  var manual = MANUALS.filter(function(m){ return m.id === id; })[0];
+  document.querySelectorAll('.tab-pill').forEach(function(b){ b.classList.remove('active'); });
+  document.getElementById('tab-' + id).classList.add('active');
+  document.getElementById('tab-' + id).scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  document.getElementById('headerTitle').textContent = manual.modelName;
+  document.getElementById('headerSub').textContent = manual.modelType;
+  buildDrawer(manual);
+  renderChat(manual);
+  document.getElementById('sendBtn').disabled = false;
+}
+
+function buildDrawer(manual){
+  var isGuide = manual.tabClass === 'guide';
+  document.getElementById('drawerName').textContent = manual.modelName;
+  document.getElementById('drawerType').textContent = manual.modelType;
+  document.getElementById('drawerTags').innerHTML = manual.tags.map(function(t){
+    return '<span class="drawer-tag ' + (isGuide ? 'green' : '') + '">' + t + '</span>';
+  }).join('');
+  var topicsHtml = '';
+  Object.keys(manual.topics).forEach(function(section){
+    topicsHtml += '<div class="topic-section"><div class="topic-label">' + section + '</div>';
+    manual.topics[section].forEach(function(q){
+      topicsHtml += '<button class="topic-chip" data-q="' + encodeURIComponent(q) + '" onclick="chipClick(this)">' + q + '</button>';
+    });
+    topicsHtml += '</div>';
+  });
+  document.getElementById('drawerTopics').innerHTML = topicsHtml;
+}
+
+function openDrawer(){ document.getElementById('drawer').classList.add('open'); document.getElementById('drawerOverlay').classList.add('open'); }
+function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); document.getElementById('drawerOverlay').classList.remove('open'); }
+
+function chipClick(btn){
+  var q = decodeURIComponent(btn.getAttribute('data-q'));
+  closeDrawer();
+  document.getElementById('userInput').value = q;
+  sendMessage();
+}
+
+function renderChat(manual){
+  var container = document.getElementById('chatMessages');
+  var conv = conversations[manual.id];
+  if(conv.length === 0){
+    var allQ = [];
+    Object.values(manual.topics).forEach(function(arr){ allQ = allQ.concat(arr); });
+    var suggestions = allQ.slice(0,3).map(function(q){
+      return '<button class="suggestion-btn" data-q="' + encodeURIComponent(q) + '" onclick="chipClick(this)">' + q + '</button>';
+    }).join('');
+    container.innerHTML =
+      '<div class="welcome">' +
+        '<div class="welcome-icon">&#128203;</div>' +
+        '<h2>' + manual.modelName + '</h2>' +
+        '<p>Perguntas baseadas exclusivamente no <strong>' + manual.modelType + '</strong>.</p>' +
+        '<div class="welcome-suggestions">' + suggestions + '</div>' +
+      '</div>';
+  } else {
+    container.innerHTML = '';
+    conv.forEach(function(msg){ appendMessage(msg.role, msg.content, msg.source, false); });
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function appendMessage(role, content, source, scroll){
+  if(scroll === undefined) scroll = true;
+  var container = document.getElementById('chatMessages');
+  var welcome = container.querySelector('.welcome');
+  if(welcome) welcome.remove();
+  var div = document.createElement('div');
+  div.className = 'msg ' + role;
+  var avatar = role === 'user' ? 'EU' : 'HP';
+  var sourceHtml = source ? '<div class="msg-source">' + source + '</div>' : '';
+  var formatted = content
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+    .replace(/`(.*?)`/g,'<code>$1</code>')
+    .replace(/\n/g,'<br>');
+  div.innerHTML = '<div class="msg-avatar">' + avatar + '</div><div style="min-width:0;flex:1;"><div class="msg-bubble">' + formatted + '</div>' + sourceHtml + '</div>';
+  container.appendChild(div);
+  if(scroll) setTimeout(function(){ container.scrollTop = container.scrollHeight; }, 50);
+}
+
+function showTyping(){
+  var container = document.getElementById('chatMessages');
+  var welcome = container.querySelector('.welcome');
+  if(welcome) welcome.remove();
+  var div = document.createElement('div');
+  div.className = 'msg ai';
+  div.id = 'typingIndicator';
+  div.innerHTML = '<div class="msg-avatar">HP</div><div class="msg-bubble"><div class="typing"><span></span><span></span><span></span></div></div>';
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeTyping(){ var t = document.getElementById('typingIndicator'); if(t) t.remove(); }
+
+async function sendMessage(){
+  var input = document.getElementById('userInput');
+  var question = input.value.trim();
+  if(!question) return;
+  input.value = '';
+  input.style.height = 'auto';
+  document.getElementById('sendBtn').disabled = true;
+  var manual = MANUALS.filter(function(m){ return m.id === currentId; })[0];
+  var conv = conversations[currentId];
+  conv.push({role:'user', content:question});
+  appendMessage('user', question);
+  var messages = conv.slice(0,-1).map(function(m){ return {role: m.role === 'user' ? 'user' : 'assistant', content: m.content}; });
+  messages.push({role:'user', content:question});
+  showTyping();
+  try {
+    var response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({system: manual.prompt, messages: messages, manualId: currentId})
+    });
+    var text = await response.text();
+    var data;
+    try { data = JSON.parse(text); } catch(e) { throw new Error('Resposta invalida: ' + text.substring(0,100)); }
+    removeTyping();
+    if(data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+    if(!data.content || !data.content.length) throw new Error('Resposta vazia');
+    var answer = data.content.map(function(b){ return b.text || ''; }).join('');
+    conv.push({role:'assistant', content:answer, source:'Manual: ' + manual.modelType});
+    appendMessage('assistant', answer, 'Manual: ' + manual.modelType);
+  } catch(err) {
+    removeTyping();
+    var errMsg = 'Erro: ' + err.message;
+    conv.push({role:'assistant', content:errMsg});
+    var container = document.getElementById('chatMessages');
+    var div = document.createElement('div');
+    div.className = 'msg ai';
+    div.innerHTML = '<div class="msg-avatar">HP</div><div class="error-bubble">' + errMsg + '</div>';
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+  document.getElementById('sendBtn').disabled = false;
+  input.focus();
+}
+
+function setupInput(){
+  var input = document.getElementById('userInput');
+  input.addEventListener('keydown', function(e){ if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); } });
+  input.addEventListener('input', function(){
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 100) + 'px';
+    document.getElementById('sendBtn').disabled = !input.value.trim();
+  });
+}
+
+init();
+</script>
+
+<div id="offlineBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:100;background:#1a0d2a;border-bottom:1px solid #a855f7;padding:8px 16px;font-size:11px;font-family:IBM Plex Mono,monospace;color:#c084fc;text-align:center;">
+  &#9899; OFFLINE — busca nos manuais disponivel, IA desativada
+</div>
+
+<script>
+// Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js').then(function(reg) {
+      console.log('SW registered');
+    }).catch(function(err) {
+      console.log('SW failed:', err);
+    });
+  });
+}
+
+// Offline detection
+var isOnline = navigator.onLine;
+function updateOnlineStatus() {
+  isOnline = navigator.onLine;
+  var banner = document.getElementById('offlineBanner');
+  if (banner) banner.style.display = isOnline ? 'none' : 'block';
+  var sendBtn = document.getElementById('sendBtn');
+  var input = document.getElementById('userInput');
+  if (!isOnline && input) {
+    input.placeholder = 'Modo offline: busca no manual sem IA...';
+  } else if (input) {
+    input.placeholder = 'Pergunte sobre o modelo...';
+  }
+}
+window.addEventListener('online', updateOnlineStatus);
+window.addEventListener('offline', updateOnlineStatus);
+window.addEventListener('load', updateOnlineStatus);
+
+// Load search index for offline use
+var localIndex = null;
+fetch('/search_index.json')
+  .then(function(r){ return r.json(); })
+  .then(function(data){ localIndex = data; console.log('Search index loaded locally'); })
+  .catch(function(e){ console.log('Could not load search index:', e); });
+
+var MANUAL_INDEX_MAP = {
+  'e52645_guia':    'e52645_guia',
+  'cpmd':           'cpmd',
+  'm501_catalog':   'service',
+  'm527_catalog':   'service',
+  'e50045_catalog': 'service',
+  'e52545_catalog': 'service',
+};
+
+function localTokenize(text) {
+  return (text.toLowerCase().match(/[a-z0-9]+(?:\.[a-z0-9]+)*/g) || []);
+}
+
+function localSearch(query, manualId, topK) {
+  topK = topK || 5;
+  if (!localIndex) return [];
+  var indexKey = MANUAL_INDEX_MAP[manualId] || null;
+  if (!indexKey || !localIndex[indexKey]) return [];
+  var qTokens = new Set(localTokenize(query));
+  var chunks = localIndex[indexKey];
+  var scored = [];
+  for (var i = 0; i < chunks.length; i++) {
+    var chunk = chunks[i];
+    var kTokens = new Set(chunk.k.split(' '));
+    var tTokens = new Set(localTokenize(chunk.t));
+    var score = 0;
+    qTokens.forEach(function(t){ if(kTokens.has(t)) score += 2; if(tTokens.has(t)) score += 1; });
+    if (score > 0) scored.push({ score: score, text: chunk.t });
+  }
+  scored.sort(function(a,b){ return b.score - a.score; });
+  return scored.slice(0, topK).map(function(s){ return s.text; });
+}
+
+// Override sendMessage for offline mode
+var _originalSendMessage = null;
+window.addEventListener('load', function() {
+  setTimeout(function() {
+    _originalSendMessage = sendMessage;
+    window.sendMessage = async function() {
+      if (navigator.onLine) {
+        return _originalSendMessage();
+      }
+      // OFFLINE MODE: show manual excerpts directly
+      var input = document.getElementById('userInput');
+      var question = input.value.trim();
+      if (!question) return;
+      input.value = '';
+      input.style.height = 'auto';
+      document.getElementById('sendBtn').disabled = true;
+
+      var manual = MANUALS.filter(function(m){ return m.id === currentId; })[0];
+      var conv = conversations[currentId];
+      conv.push({role:'user', content:question});
+      appendMessage('user', question);
+
+      var chunks = localSearch(question, currentId, 5);
+      var answer;
+      if (chunks.length > 0) {
+        answer = 'Modo offline - trechos encontrados no manual:\n\n' + chunks.map(function(c, i){ return '[' + (i+1) + '] ' + c.substring(0,300); }).join('\n\n');
+      } else {
+        answer = 'Nenhum trecho encontrado para esta busca. Tente palavras-chave diferentes.';
+      }
+
+      conv.push({role:'assistant', content:answer, source:'Busca local no manual (offline)'});
+      appendMessage('assistant', answer, 'Busca local no manual (offline)');
+      document.getElementById('sendBtn').disabled = false;
+      input.focus();
+    };
+  }, 500);
+});
+</script>
+</body>
+</html>
