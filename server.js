@@ -165,7 +165,7 @@ app.post('/chat', async (req, res) => {
   }
 
   const sendDelta = (text) => {
-    if (wantsStream) res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+    if (wantsStream && !res.destroyed) res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
   };
 
   try {
