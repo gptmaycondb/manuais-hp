@@ -1,263 +1,237 @@
-'use strict';
-
-const express = require('express');
-const cors    = require('cors');
-const https   = require('https');
 require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '4mb' }));
 
-// ── Config ────────────────────────────────────────────────────────────────────
-// SEMANTIC_SEARCH=0 desliga o modelo de embedding (fallback p/ busca por palavra).
-// Útil no Render free (512 MB) caso o modelo cause out-of-memory.
+const PORT = process.env.PORT || 3000;
 const SEMANTIC = process.env.SEMANTIC_SEARCH !== '0';
+const REPO_RAW = 'https://raw.githubusercontent.com/gptmaycondb/techguide-ia/main/assets/embeddings';
 
-// ── Embeddings & Search ───────────────────────────────────────────────────────
+// ── Embeddings ────────────────────────────────────────────────────────────────
+const KEYS = [
+  'e52645_guia','cpmd','service',
+  'e62655_guia','e62655_cpmd','e62655_service',
+  'ricoh_imc3000_guia','ricoh_imc3000_service','ricoh_imc3000_parts',
+  'ricoh_mpc3004_guia','ricoh_mpc3004_service',
+];
 
-const EMBEDDINGS_BASE =
-  'https://raw.githubusercontent.com/gptmaycondb/techguide-ia/main/assets/embeddings';
-
-const MANUAL_SEARCH_KEYS = {
-  mfpe52645:     ['e52645_guia', 'cpmd', 'service'],
-  mfpe62655:     ['e62655_guia', 'e62655_cpmd', 'e62655_service'],
-  ricoh_imc3000: ['ricoh_imc3000_guia', 'ricoh_imc3000_service'],
-  ricoh_mpc3004: ['ricoh_mpc3004_guia', 'ricoh_mpc3004_service'],
-};
-
-const embeddingsCache = {};
+const embeddingsStore = {};
 let embedder = null;
-let embedderReady = false;
 
-function fetchJSON(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}: ${url}`));
-      let raw = '';
-      res.on('data', d => raw += d);
-      res.on('end', () => {
-        try { resolve(JSON.parse(raw)); } catch (e) { reject(e); }
-      });
-    }).on('error', reject);
-  });
+async function loadEmbeddings() {
+  if (!SEMANTIC) { console.log('SEMANTIC_SEARCH=0 — skipping embeddings'); return; }
+  console.log('Loading embeddings sequentially...');
+  for (const key of KEYS) {
+    try {
+      const res = await fetch(`${REPO_RAW}/${key}.json`);
+      if (!res.ok) { console.warn(`skip ${key}: HTTP ${res.status}`); continue; }
+      const data = await res.json();
+      const chunks = data[key] || [];
+      if (!chunks.length) continue;
+      const dim = chunks[0].e.length;
+      const vecs = new Float32Array(chunks.length * dim);
+      chunks.forEach((c, i) => vecs.set(c.e, i * dim));
+      embeddingsStore[key] = { texts: chunks.map(c => c.t), vecs, dim };
+      console.log(`  ${key}: ${chunks.length} chunks`);
+      if (global.gc) global.gc();
+    } catch (e) { console.warn(`skip ${key}:`, e.message); }
+  }
+  console.log('Embeddings loaded.');
 }
 
-async function loadKey(key) {
-  if (embeddingsCache[key]) return embeddingsCache[key];
+async function loadEmbedder() {
+  if (!SEMANTIC) return;
   try {
-    const data = await fetchJSON(`${EMBEDDINGS_BASE}/${key}.json`);
-    const raw = data[key] || [];
-    // Vetores em Float32Array ficam fora do heap V8 (ArrayBuffer) → muito mais leve.
-    // Sem busca semântica, descarta os vetores e guarda só o texto.
-    embeddingsCache[key] = raw.map(c => ({
-      t: c.t,
-      e: (SEMANTIC && c.e) ? Float32Array.from(c.e) : null,
-    }));
-    console.log(JSON.stringify({ event: 'embedding_key_loaded', key, chunks: embeddingsCache[key].length }));
-    return embeddingsCache[key];
-  } catch (e) {
-    console.log(JSON.stringify({ event: 'embedding_key_failed', key, error: e.message }));
-    embeddingsCache[key] = [];
-    return [];
-  }
-}
-
-async function preloadKeys() {
-  const allKeys = [...new Set(Object.values(MANUAL_SEARCH_KEYS).flat())];
-  // Sequencial (não Promise.all) p/ evitar pico de memória ao parsear vários JSON juntos.
-  for (const k of allKeys) {
-    await loadKey(k);
-    if (global.gc) global.gc();
-  }
-  console.log(JSON.stringify({ event: 'embeddings_preloaded', keys: allKeys.length }));
+    const { pipeline } = await import('@xenova/transformers');
+    embedder = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2', { quantized: true });
+    console.log('Embedder ready.');
+  } catch (e) { console.warn('Embedder failed:', e.message); }
 }
 
 function cosineSim(a, b) {
-  let dot = 0;
-  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
-  return dot; // vetores pré-normalizados
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
 }
 
-function keywordSearch(chunks, query, topK = 5) {
-  const words = query.toLowerCase().split(/\W+/).filter(w => w.length > 2);
-  const scored = chunks
-    .map(c => ({ score: words.reduce((s, w) => s + (c.t.toLowerCase().includes(w) ? 1 : 0), 0), text: c.t }))
-    .filter(c => c.score > 0);
+async function semanticSearch(query, key, topK = 5) {
+  const store = embeddingsStore[key];
+  if (!store || !embedder) return [];
+  const out = await embedder(query, { pooling: 'mean', normalize: true });
+  const qVec = Array.from(out.data);
+  const { texts, vecs, dim } = store;
+  const scores = texts.map((t, i) => ({
+    t, score: cosineSim(qVec, Array.from(vecs.subarray(i * dim, (i+1) * dim)))
+  }));
+  scores.sort((a, b) => b.score - a.score);
+  return scores.slice(0, topK).map(s => s.t);
+}
+
+function keywordSearch(query, key, topK = 5) {
+  const store = embeddingsStore[key];
+  if (!store) return [];
+  const q = query.toLowerCase().split(/\s+/);
+  const scored = store.texts
+    .map(t => ({ t, score: q.reduce((s, w) => s + (t.toLowerCase().includes(w) ? 1 : 0), 0) }))
+    .filter(x => x.score > 0);
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK).map(c => c.text);
+  return scored.slice(0, topK).map(s => s.t);
 }
 
-async function search(query, keys, topK = 5) {
-  const allChunks = (await Promise.all(keys.map(loadKey))).flat();
-  if (!allChunks.length) return [];
-
-  if (embedderReady) {
-    try {
-      const out = await embedder(query, { pooling: 'mean', normalize: true });
-      const qVec = out.data; // Float32Array
-      const scored = allChunks
-        .filter(c => c.e)
-        .map(c => ({ sim: cosineSim(qVec, c.e), text: c.t }));
-      scored.sort((a, b) => b.sim - a.sim);
-      return scored.slice(0, topK).map(c => c.text);
-    } catch (e) {
-      console.error('semantic_search_error:', e.message);
-    }
-  }
-  return keywordSearch(allChunks, query, topK);
-}
-
-async function initEmbedder() {
-  await preloadKeys().catch(e => console.error('preload_error:', e.message));
-
-  if (!SEMANTIC) {
-    console.log(JSON.stringify({ event: 'semantic_disabled', note: 'keyword search ativo' }));
-    return;
-  }
-
-  try {
-    const { pipeline, env } = await import('@xenova/transformers');
-    env.cacheDir = '/tmp/xenova';        // diretório gravável no Render
-    env.allowLocalModels = false;
-    embedder = await pipeline(
-      'feature-extraction',
-      'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
-      { quantized: true }                 // modelo int8 (~30 MB) em vez de fp32
-    );
-    embedderReady = true;
-    console.log(JSON.stringify({ event: 'embedder_ready' }));
-  } catch (e) {
-    console.log(JSON.stringify({ event: 'embedder_unavailable', error: e.message }));
-  }
-}
-
-// ── AI Providers — instanciação lazy ───────────────────────────────────────────
-
-const MODELS = {
-  'claude':      'claude-sonnet-4-6',
-  'claude-opus': 'claude-opus-4-8',
-  'openai':      'gpt-4o',
-  'gemini':      'gemini-1.5-pro',
-};
-
-async function callClaude(modelId, system, messages, maxTokens) {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY não configurada no servidor.');
+// ── Lazy AI providers ─────────────────────────────────────────────────────────
+async function callClaude(systemPrompt, messages, maxTokens, model, onDelta) {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const res = await client.messages.create({ model: modelId, max_tokens: maxTokens, system, messages });
-  return res.content[0].text;
-}
-
-async function callOpenAI(system, messages, maxTokens) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY não configurada no servidor.');
-  const { default: OpenAI } = await import('openai');
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const msgs = [{ role: 'system', content: system }, ...messages];
-  const res = await client.chat.completions.create({ model: MODELS.openai, max_tokens: maxTokens, messages: msgs });
-  return res.choices[0].message.content;
-}
-
-async function callGemini(system, messages, maxTokens) {
-  if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY não configurada no servidor.');
-  const { GoogleGenerativeAI } = await import('@google/generative-ai');
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const gModel = genAI.getGenerativeModel({
-    model: MODELS.gemini,
-    systemInstruction: system,
-    generationConfig: { maxOutputTokens: maxTokens },
+  let fullText = '';
+  const stream = await client.messages.stream({
+    model: model || 'claude-sonnet-4-6',
+    max_tokens: maxTokens || 1024,
+    system: systemPrompt,
+    messages,
   });
-  const history = messages.slice(0, -1).map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+      onDelta(event.delta.text);
+      fullText += event.delta.text;
+    }
+  }
+  return fullText;
+}
+
+async function callOpenAI(systemPrompt, messages, maxTokens, onDelta) {
+  const { OpenAI } = await import('openai');
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  let fullText = '';
+  const stream = await openai.chat.completions.create({
+    model: 'gpt-4o', max_tokens: maxTokens || 1024, stream: true,
+    messages: [{ role: 'system', content: systemPrompt }, ...messages],
+  });
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content || '';
+    if (text) { onDelta(text); fullText += text; }
+  }
+  return fullText;
+}
+
+async function callGemini(systemPrompt, messages, maxTokens, onDelta) {
+  const { GoogleGenerativeAI } = await import('@google/generative-ai');
+  const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const mdl = genai.getGenerativeModel({ model: 'gemini-1.5-pro' });
+  let fullText = '';
+  const history = messages.map(m => ({
+    role: m.role === 'user' ? 'user' : 'model',
     parts: [{ text: m.content }],
   }));
-  const chat = gModel.startChat({ history });
-  const last = messages[messages.length - 1]?.content || '';
-  const res = await chat.sendMessage(last);
-  return res.response.text();
+  const lastUser = history.pop();
+  const chat = mdl.startChat({ history, systemInstruction: systemPrompt });
+  const result = await chat.sendMessageStream(lastUser?.parts[0]?.text || '');
+  for await (const chunk of result.stream) {
+    const text = chunk.text();
+    if (text) { onDelta(text); fullText += text; }
+  }
+  return fullText;
 }
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// ── Index map ─────────────────────────────────────────────────────────────────
+const MANUAL_KEY_MAP = {
+  'mfpe52645':'e52645_guia', 'e52645_guia':'e52645_guia',
+  'cpmd':'cpmd', 'service':'service',
+  'mfpe62655':'e62655_guia', 'e62655_guia':'e62655_guia',
+  'e62655_cpmd':'e62655_cpmd', 'e62655_service':'e62655_service',
+  'ricoh_imc3000':'ricoh_imc3000_guia', 'ricoh_imc3000_guia':'ricoh_imc3000_guia',
+  'ricoh_imc3000_service':'ricoh_imc3000_service', 'ricoh_imc3000_parts':'ricoh_imc3000_parts',
+  'ricoh_mpc3004':'ricoh_mpc3004_guia', 'ricoh_mpc3004_guia':'ricoh_mpc3004_guia',
+  'ricoh_mpc3004_service':'ricoh_mpc3004_service',
+};
 
-app.get('/ping', (_req, res) => {
-  res.json({ ok: true, ts: Date.now(), semantic: embedderReady });
+// ── Routes ────────────────────────────────────────────────────────────────────
+app.get('/ping', (req, res) => {
+  res.json({ ok: true, ts: Date.now(), semantic: !!embedder });
 });
 
 app.post('/chat', async (req, res) => {
   const t0 = Date.now();
-  const {
-    systemBase, query, history = [], manualId,
-    system: legacySystem, messages: legacyMessages,
-    max_tokens = 1024, provider = 'claude',
-  } = req.body;
+  const wantsStream = (req.headers.accept || '').includes('text/event-stream');
 
-  const isNew = !!query;
+  if (wantsStream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.flushHeaders();
+  }
+
+  const sendDelta = (text) => {
+    if (wantsStream) res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+  };
 
   try {
-    let systemPrompt, chatMessages, foundInManual = false, chunksFound = 0;
+    const isNew = !!req.body.query;
+    const provider = req.body.provider || 'claude';
+    const maxTokens = req.body.max_tokens || 1024;
+
+    let systemPrompt, apiMessages, foundInManual;
 
     if (isNew) {
-      const keys = MANUAL_SEARCH_KEYS[manualId] || [];
-      const chunks = keys.length ? await search(query, keys, 5) : [];
-      chunksFound   = chunks.length;
-      foundInManual = chunksFound > 0;
+      const { query, systemBase, history = [], manualId } = req.body;
+      const primaryKey = MANUAL_KEY_MAP[manualId] || manualId || 'e52645_guia';
+      const chunks = embedder
+        ? await semanticSearch(query, primaryKey, 5)
+        : keywordSearch(query, primaryKey, 5);
 
-      const ctx = chunks.length
-        ? '\n\nTrechos relevantes do manual:\n' + chunks.map((c, i) => `[${i + 1}] ${c}`).join('\n\n')
-        : '';
-      systemPrompt  = (systemBase || '') + ctx;
-      chatMessages  = [
-        ...history.map(m => ({
-          role: m.role === 'ai' ? 'assistant' : (m.role || 'user'),
-          content: m.text || m.content || '',
-        })),
-        { role: 'user', content: query },
-      ];
+      foundInManual = chunks.length > 0;
+      const cap = c => c.length > 700 ? c.substring(0, 700) + '…' : c;
+      const contextBlock = foundInManual
+        ? '\n\nTRECHOS DO MANUAL:\n\n' + chunks.map((c, i) => `[${i+1}]\n${cap(c)}`).join('\n\n---\n\n')
+          + '\n\nResponda baseando-se nos trechos acima.'
+        : '\n\nNenhum trecho encontrado nos manuais. Responda com conhecimento tecnico geral.';
+
+      systemPrompt = (systemBase || '') + contextBlock;
+      apiMessages = [...history.slice(-6), { role: 'user', content: query }];
     } else {
-      systemPrompt  = legacySystem || '';
-      chatMessages  = (legacyMessages || []).map(m => ({
-        role: m.role === 'assistant' ? 'assistant' : (m.role || 'user'),
-        content: typeof m.content === 'string' ? m.content : (m.content?.[0]?.text || ''),
-      }));
-      foundInManual = systemPrompt.length > 200;
-      chunksFound   = -1;
+      systemPrompt = req.body.system || '';
+      apiMessages = req.body.messages || [];
+      foundInManual = true;
     }
 
-    let text;
-    if (provider === 'openai') {
-      text = await callOpenAI(systemPrompt, chatMessages, max_tokens);
+    const modelMap = { 'claude-opus': 'claude-opus-4-8', claude: 'claude-sonnet-4-6' };
+    let fullText = '';
+
+    if (provider === 'claude' || provider === 'claude-opus') {
+      fullText = await callClaude(systemPrompt, apiMessages, maxTokens, modelMap[provider], sendDelta);
+    } else if (provider === 'openai') {
+      fullText = await callOpenAI(systemPrompt, apiMessages, maxTokens, sendDelta);
     } else if (provider === 'gemini') {
-      text = await callGemini(systemPrompt, chatMessages, max_tokens);
+      fullText = await callGemini(systemPrompt, apiMessages, maxTokens, sendDelta);
     } else {
-      const model = MODELS[provider] || MODELS.claude;
-      text = await callClaude(model, systemPrompt, chatMessages, max_tokens);
+      throw new Error(`Unknown provider: ${provider}`);
     }
 
-    if (!text) throw new Error('Resposta vazia do modelo');
+    console.log(JSON.stringify({ provider, ms: Date.now()-t0, chars: fullText.length, foundInManual }));
 
-    console.log(JSON.stringify({
-      ts: new Date().toISOString(), provider, manualId: manualId || null,
-      queryLen: query?.length || 0, chunksFound, semantic: embedderReady,
-      durationMs: Date.now() - t0, status: 'ok',
-    }));
-
-    res.json({ content: [{ text }], foundInManual });
-
+    if (wantsStream) {
+      res.write(`data: ${JSON.stringify({ type: 'done', foundInManual })}\n\n`);
+      res.end();
+    } else {
+      res.json({ content: [{ text: fullText }], foundInManual });
+    }
   } catch (err) {
-    console.log(JSON.stringify({
-      ts: new Date().toISOString(), provider, manualId: manualId || null,
-      queryLen: query?.length || 0, durationMs: Date.now() - t0,
-      status: 'error', error: err.message,
-    }));
-    res.status(500).json({ error: err.message });
+    console.error('chat error:', err.message);
+    if (wantsStream) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      res.end();
+    } else {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(JSON.stringify({ event: 'server_start', port: PORT, semantic: SEMANTIC }));
-  initEmbedder();
+app.listen(PORT, async () => {
+  console.log(`Server listening on port ${PORT}`);
+  await loadEmbeddings();
+  await loadEmbedder();
 });
