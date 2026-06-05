@@ -88,7 +88,7 @@ async function callClaude(systemPrompt, messages, maxTokens, model, onDelta) {
   let fullText = '';
   const stream = await client.messages.stream({
     model: model || 'claude-sonnet-4-6',
-    max_tokens: maxTokens || 1024,
+    max_tokens: maxTokens || 3072,
     system: systemPrompt,
     messages,
   });
@@ -106,7 +106,7 @@ async function callOpenAI(systemPrompt, messages, maxTokens, onDelta) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   let fullText = '';
   const stream = await openai.chat.completions.create({
-    model: 'gpt-4o', max_tokens: maxTokens || 1024, stream: true,
+    model: 'gpt-4o', max_tokens: maxTokens || 3072, stream: true,
     messages: [{ role: 'system', content: systemPrompt }, ...messages],
   });
   for await (const chunk of stream) {
@@ -171,7 +171,7 @@ app.post('/chat', async (req, res) => {
   try {
     const isNew = !!req.body.query;
     const provider = req.body.provider || 'claude';
-    const maxTokens = req.body.max_tokens || 1024;
+    const maxTokens = req.body.max_tokens || 3072;
 
     let systemPrompt, apiMessages, foundInManual;
 
