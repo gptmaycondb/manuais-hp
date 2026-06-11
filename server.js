@@ -10,6 +10,11 @@ const PORT = process.env.PORT || 3000;
 const SEMANTIC = process.env.SEMANTIC_SEARCH !== '0';
 const REPO_RAW = 'https://raw.githubusercontent.com/gptmaycondb/techguide-ia/main/assets/embeddings';
 
+// ── Model IDs (override via env vars, no rebuild required) ────────────────────
+const GEMINI_MODEL    = process.env.GEMINI_MODEL    || 'gemini-2.5-flash';
+const OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-4o-mini';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+
 // ── Embeddings ────────────────────────────────────────────────────────────────
 const KEYS = [
   'e52645_guia','cpmd','service',
@@ -87,7 +92,7 @@ async function callClaude(systemPrompt, messages, maxTokens, model, onDelta) {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   let fullText = '';
   const stream = await client.messages.stream({
-    model: model || 'claude-sonnet-4-6',
+    model: model || ANTHROPIC_MODEL,
     max_tokens: maxTokens || 3072,
     system: systemPrompt,
     messages,
@@ -106,7 +111,7 @@ async function callOpenAI(systemPrompt, messages, maxTokens, onDelta) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   let fullText = '';
   const stream = await openai.chat.completions.create({
-    model: 'gpt-4o', max_tokens: maxTokens || 3072, stream: true,
+    model: OPENAI_MODEL, max_tokens: maxTokens || 3072, stream: true,
     messages: [{ role: 'system', content: systemPrompt }, ...messages],
   });
   for await (const chunk of stream) {
@@ -116,18 +121,26 @@ async function callOpenAI(systemPrompt, messages, maxTokens, onDelta) {
   return fullText;
 }
 
-async function callGemini(systemPrompt, messages, maxTokens, onDelta) {
-  const { GoogleGenerativeAI } = await import('@google/generative-ai');
-  const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const mdl = genai.getGenerativeModel({ model: 'gemini-1.5-pro' });
-  let fullText = '';
-  const history = messages.map(m => ({
+// Pure function — testable without API key (SDK validates history client-side)
+function buildGeminiMessages(messages) {
+  const mapped = messages.map(m => ({
     role: m.role === 'user' ? 'user' : 'model',
     parts: [{ text: m.content }],
   }));
-  const lastUser = history.pop();
+  const lastMsg = mapped.pop() || null;
+  // Gemini requires history[0].role === 'user'; strip any leading model turns
+  while (mapped.length > 0 && mapped[0].role !== 'user') mapped.shift();
+  return { history: mapped, userText: lastMsg?.parts[0]?.text || '' };
+}
+
+async function callGemini(systemPrompt, messages, maxTokens, onDelta) {
+  const { GoogleGenerativeAI } = await import('@google/generative-ai');
+  const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const mdl = genai.getGenerativeModel({ model: GEMINI_MODEL });
+  let fullText = '';
+  const { history, userText } = buildGeminiMessages(messages);
   const chat = mdl.startChat({ history, systemInstruction: systemPrompt });
-  const result = await chat.sendMessageStream(lastUser?.parts[0]?.text || '');
+  const result = await chat.sendMessageStream(userText);
   for await (const chunk of result.stream) {
     const text = chunk.text();
     if (text) { onDelta(text); fullText += text; }
@@ -150,6 +163,14 @@ const MANUAL_KEY_MAP = {
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.get('/ping', (req, res) => {
   res.json({ ok: true, ts: Date.now(), semantic: !!embedder });
+});
+
+app.get('/providers', (req, res) => {
+  const providers = [];
+  if (process.env.ANTHROPIC_API_KEY) providers.push('claude');
+  if (process.env.OPENAI_API_KEY) providers.push('openai');
+  if (process.env.GEMINI_API_KEY) providers.push('gemini');
+  res.json({ providers });
 });
 
 app.post('/chat', async (req, res) => {
@@ -197,7 +218,7 @@ app.post('/chat', async (req, res) => {
       foundInManual = true;
     }
 
-    const modelMap = { 'claude-opus': 'claude-opus-4-8', claude: 'claude-sonnet-4-6' };
+    const modelMap = { 'claude-opus': 'claude-opus-4-8', claude: ANTHROPIC_MODEL };
     let fullText = '';
 
     if (provider === 'claude' || provider === 'claude-opus') {
@@ -232,6 +253,23 @@ app.post('/chat', async (req, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
+
+  if (process.env.ANTHROPIC_API_KEY) console.log(`provider=claude model=${ANTHROPIC_MODEL}`);
+  if (process.env.OPENAI_API_KEY)    console.log(`provider=openai model=${OPENAI_MODEL}`);
+  if (process.env.GEMINI_API_KEY) {
+    console.log(`provider=gemini model=${GEMINI_MODEL}`);
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`);
+      if (r.ok) {
+        const data = await r.json();
+        const names = (data.models || []).map(m => m.name.replace('models/', ''));
+        console.log(`gemini models (${names.length}): ${names.slice(0, 8).join(', ')}${names.length > 8 ? '…' : ''}`);
+      } else {
+        console.warn(`gemini ListModels: HTTP ${r.status}`);
+      }
+    } catch (e) { console.warn('gemini ListModels failed:', e.message); }
+  }
+
   await loadEmbeddings();
   await loadEmbedder();
 });
