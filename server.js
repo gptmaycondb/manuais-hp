@@ -15,6 +15,9 @@ const GEMINI_MODEL    = process.env.GEMINI_MODEL    || 'gemini-2.5-flash';
 const OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-4o-mini';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 
+// ── Instrução de formato universal (todos os providers) ───────────────────────
+const FORMAT_INSTRUCTION = '\n\nEstruture a resposta em markdown com seções (Defeito, Causas, Solução passo a passo, Recuperação, SPs/Peças), tabelas onde couber, e marque explicitamente como \'(Complemento)\' qualquer informação que não esteja nos trechos fornecidos.';
+
 // ── Embeddings ────────────────────────────────────────────────────────────────
 const KEYS = [
   'e52645_guia','cpmd','service',
@@ -225,6 +228,8 @@ app.post('/chat', async (req, res) => {
       apiMessages = req.body.messages || [];
       foundInManual = true;
     }
+
+    systemPrompt += FORMAT_INSTRUCTION;
 
     const modelMap = { 'claude-opus': 'claude-opus-4-8', claude: ANTHROPIC_MODEL };
     let fullText = '';
