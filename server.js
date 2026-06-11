@@ -134,16 +134,24 @@ function buildGeminiMessages(messages) {
 }
 
 async function callGemini(systemPrompt, messages, maxTokens, onDelta) {
-  const { GoogleGenerativeAI } = await import('@google/generative-ai');
-  const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const mdl = genai.getGenerativeModel({ model: GEMINI_MODEL });
+  const { GoogleGenAI } = await import('@google/genai');
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   let fullText = '';
   const { history, userText } = buildGeminiMessages(messages);
-  const chat = mdl.startChat({ history, systemInstruction: systemPrompt });
-  const result = await chat.sendMessageStream(userText);
-  for await (const chunk of result.stream) {
-    const text = chunk.text();
-    if (text) { onDelta(text); fullText += text; }
+  try {
+    const chat = ai.chats.create({
+      model: GEMINI_MODEL,
+      config: { systemInstruction: systemPrompt },
+      history,
+    });
+    const stream = await chat.sendMessageStream({ message: userText });
+    for await (const chunk of stream) {
+      const text = chunk.text;
+      if (text) { onDelta(text); fullText += text; }
+    }
+  } catch (e) {
+    if (e.status) console.error(`Gemini HTTP ${e.status} ${e.statusText || ''}:`, String(e.message).slice(0, 500));
+    throw e;
   }
   return fullText;
 }
