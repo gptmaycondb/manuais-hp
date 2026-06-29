@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const admin = require('firebase-admin');
 
 const app = express();
 app.use(cors());
@@ -14,6 +15,47 @@ const REPO_RAW = 'https://raw.githubusercontent.com/gptmaycondb/techguide-ia/mai
 const GEMINI_MODEL    = process.env.GEMINI_MODEL    || 'gemini-2.5-flash';
 const OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-4o-mini';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+
+const AUTH_ERROR = {
+  error: 'auth_required',
+  message: 'Sessão expirada, faça login novamente.',
+};
+
+function initializeFirebaseAuth(serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT) {
+  if (!serviceAccountJson) {
+    console.error('Firebase Admin disabled: FIREBASE_SERVICE_ACCOUNT is missing');
+    return null;
+  }
+  try {
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    const firebaseApp = admin.apps.length
+      ? admin.app()
+      : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    console.log('Firebase Admin initialized');
+    return firebaseApp.auth();
+  } catch (error) {
+    console.error(`Firebase Admin disabled: invalid FIREBASE_SERVICE_ACCOUNT (${error.message})`);
+    return null;
+  }
+}
+
+function createRequireAuth(firebaseAuth) {
+  return async function requireAuth(req, res, next) {
+    const match = req.headers.authorization?.match(/^Bearer\s+(.+)$/i);
+    if (!firebaseAuth || !match) {
+      return res.status(401).json(AUTH_ERROR);
+    }
+    try {
+      const decoded = await firebaseAuth.verifyIdToken(match[1]);
+      req.uid = decoded.uid;
+      return next();
+    } catch {
+      return res.status(401).json(AUTH_ERROR);
+    }
+  };
+}
+
+const requireAuth = createRequireAuth(initializeFirebaseAuth());
 
 // ── Instrução de formato universal (todos os providers) ───────────────────────
 const FORMAT_INSTRUCTION = '\n\nEstruture a resposta em markdown com seções (Defeito, Causas, Solução passo a passo, Recuperação, SPs/Peças), tabelas onde couber, e marque explicitamente como \'(Complemento)\' qualquer informação que não esteja nos trechos fornecidos.';
@@ -184,7 +226,7 @@ app.get('/providers', (req, res) => {
   res.json({ providers });
 });
 
-app.post('/chat', async (req, res) => {
+app.post('/chat', requireAuth, async (req, res) => {
   const t0 = Date.now();
   const wantsStream = (req.headers.accept || '').includes('text/event-stream');
 
