@@ -15,7 +15,13 @@ const REPO_RAW = 'https://raw.githubusercontent.com/gptmaycondb/techguide-ia/mai
 const GEMINI_MODEL    = process.env.GEMINI_MODEL    || 'gemini-2.5-flash';
 const OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-4o-mini';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
-const DAILY_LIMIT = 10;
+
+function parseDailyLimit(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 10;
+}
+
+const DAILY_LIMIT = parseDailyLimit(process.env.DAILY_LIMIT);
 
 const AUTH_ERROR = {
   error: 'auth_required',
