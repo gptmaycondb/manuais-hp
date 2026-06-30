@@ -15,13 +15,14 @@ const REPO_RAW = 'https://raw.githubusercontent.com/gptmaycondb/techguide-ia/mai
 const GEMINI_MODEL    = process.env.GEMINI_MODEL    || 'gemini-2.5-flash';
 const OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-4o-mini';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+const DAILY_LIMIT = 10;
 
 const AUTH_ERROR = {
   error: 'auth_required',
   message: 'Sessão expirada, faça login novamente.',
 };
 
-function initializeFirebaseAuth(serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT) {
+function initializeFirebaseServices(serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT) {
   if (!serviceAccountJson) {
     console.error('Firebase Admin disabled: FIREBASE_SERVICE_ACCOUNT is missing');
     return null;
@@ -32,7 +33,10 @@ function initializeFirebaseAuth(serviceAccountJson = process.env.FIREBASE_SERVIC
       ? admin.app()
       : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     console.log('Firebase Admin initialized');
-    return firebaseApp.auth();
+    return {
+      auth: firebaseApp.auth(),
+      firestore: firebaseApp.firestore(),
+    };
   } catch (error) {
     console.error(`Firebase Admin disabled: invalid FIREBASE_SERVICE_ACCOUNT (${error.message})`);
     return null;
@@ -48,6 +52,7 @@ function createRequireAuth(firebaseAuth) {
     try {
       const decoded = await firebaseAuth.verifyIdToken(match[1]);
       req.uid = decoded.uid;
+      req.email = decoded.email || null;
       return next();
     } catch {
       return res.status(401).json(AUTH_ERROR);
@@ -55,7 +60,94 @@ function createRequireAuth(firebaseAuth) {
   };
 }
 
-const requireAuth = createRequireAuth(initializeFirebaseAuth());
+function getSaoPauloDay(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value);
+  const get = type => parts.find(part => part.type === type)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+function isMasterEmail(email, masterEmail) {
+  return Boolean(email && masterEmail)
+    && email.trim().toLowerCase() === masterEmail.trim().toLowerCase();
+}
+
+function createUsageLimit({
+  firestore,
+  fieldValue,
+  masterEmail = process.env.MASTER_EMAIL,
+  dailyLimit = DAILY_LIMIT,
+  now = () => new Date(),
+}) {
+  return async function requireUsage(req, res, next) {
+    if (isMasterEmail(req.email, masterEmail)) {
+      req.usage = { unlimited: true };
+      return next();
+    }
+    if (!firestore) {
+      return res.status(503).json({
+        error: 'usage_unavailable',
+        message: 'Controle de consultas temporariamente indisponível. Tente novamente.',
+      });
+    }
+
+    const day = getSaoPauloDay(now());
+    const ref = firestore.collection('usage').doc(`${req.uid}_${day}`);
+    let used = 0;
+    try {
+      await firestore.runTransaction(async transaction => {
+        const snapshot = await transaction.get(ref);
+        const current = snapshot.exists ? Number(snapshot.data()?.count || 0) : 0;
+        if (current >= dailyLimit) {
+          const error = new Error('daily_limit_reached');
+          error.code = 'daily_limit_reached';
+          throw error;
+        }
+        used = current + 1;
+        transaction.set(ref, {
+          uid: req.uid,
+          day,
+          count: fieldValue.increment(1),
+          updatedAt: fieldValue.serverTimestamp(),
+        }, { merge: true });
+      });
+    } catch (error) {
+      if (error.code === 'daily_limit_reached') {
+        return res.status(429).json({
+          error: 'rate_limit',
+          message: 'Limite diário de consultas atingido. Libera à meia-noite.',
+          used: dailyLimit,
+          limit: dailyLimit,
+        });
+      }
+      console.error(`Usage limit failed for uid=${req.uid}:`, error.message);
+      return res.status(503).json({
+        error: 'usage_unavailable',
+        message: 'Controle de consultas temporariamente indisponível. Tente novamente.',
+      });
+    }
+
+    req.usage = { used, limit: dailyLimit, remaining: dailyLimit - used };
+    return next();
+  };
+}
+
+function isProviderRateLimit(error) {
+  return error?.status === 429
+    || error?.statusCode === 429
+    || /(?:429|rate.?limit|quota|resource_exhausted)/i.test(error?.message || '');
+}
+
+const firebaseServices = initializeFirebaseServices();
+const requireAuth = createRequireAuth(firebaseServices?.auth);
+const requireUsage = createUsageLimit({
+  firestore: firebaseServices?.firestore,
+  fieldValue: admin.firestore.FieldValue,
+});
 
 // ── Instrução de formato universal (todos os providers) ───────────────────────
 const FORMAT_INSTRUCTION = '\n\nEstruture a resposta em markdown com seções (Defeito, Causas, Solução passo a passo, Recuperação, SPs/Peças), tabelas onde couber, e marque explicitamente como \'(Complemento)\' qualquer informação que não esteja nos trechos fornecidos.';
@@ -226,7 +318,7 @@ app.get('/providers', (req, res) => {
   res.json({ providers });
 });
 
-app.post('/chat', requireAuth, async (req, res) => {
+app.post('/chat', requireAuth, requireUsage, async (req, res) => {
   const t0 = Date.now();
   const wantsStream = (req.headers.accept || '').includes('text/event-stream');
 
@@ -241,6 +333,9 @@ app.post('/chat', requireAuth, async (req, res) => {
   const sendDelta = (text) => {
     if (wantsStream && !res.destroyed) res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
   };
+  if (wantsStream) {
+    res.write(`data: ${JSON.stringify({ type: 'usage', ...req.usage })}\n\n`);
+  }
 
   try {
     const isNew = !!req.body.query;
@@ -292,15 +387,21 @@ app.post('/chat', requireAuth, async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'done', foundInManual })}\n\n`);
       res.end();
     } else {
-      res.json({ content: [{ text: fullText }], foundInManual });
+      res.json({ content: [{ text: fullText }], foundInManual, usage: req.usage });
     }
   } catch (err) {
-    console.error('chat error:', err.message);
+    const providerRateLimit = isProviderRateLimit(err);
+    const status = providerRateLimit ? 429 : 500;
+    const error = providerRateLimit ? 'provider_rate_limit' : 'provider_error';
+    const message = providerRateLimit
+      ? 'Serviço de IA temporariamente indisponível. Tente em instantes.'
+      : err.message;
+    console.error(`chat error status=${err.status || err.statusCode || status}:`, err.message);
     if (wantsStream) {
-      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'error', error, message })}\n\n`);
       res.end();
     } else {
-      res.status(500).json({ error: err.message });
+      res.status(status).json({ error, message });
     }
   }
 });
