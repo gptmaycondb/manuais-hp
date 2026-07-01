@@ -22,6 +22,7 @@ function parseDailyLimit(value) {
 }
 
 const DAILY_LIMIT = parseDailyLimit(process.env.DAILY_LIMIT);
+const RESERVATION_TTL_MS = 5 * 60 * 1000;
 
 const AUTH_ERROR = {
   error: 'auth_required',
@@ -82,16 +83,39 @@ function isMasterEmail(email, masterEmail) {
     && email.trim().toLowerCase() === masterEmail.trim().toLowerCase();
 }
 
+function isValidRequestId(requestId) {
+  return typeof requestId === 'string'
+    && /^[A-Za-z0-9_-]{16,128}$/.test(requestId);
+}
+
+function cleanExpiredReservations(requests, nowMs) {
+  const cleaned = {};
+  for (const [requestId, entry] of Object.entries(requests || {})) {
+    if (entry?.state === 'reserved' && Number(entry.expiresAtMs || 0) <= nowMs) continue;
+    cleaned[requestId] = entry;
+  }
+  return cleaned;
+}
+
 function createUsageLimit({
   firestore,
   fieldValue,
   masterEmail = process.env.MASTER_EMAIL,
   dailyLimit = DAILY_LIMIT,
   now = () => new Date(),
+  reservationTtlMs = RESERVATION_TTL_MS,
 }) {
   return async function requireUsage(req, res, next) {
+    const requestId = req.body?.requestId;
+    if (!isValidRequestId(requestId)) {
+      return res.status(400).json({
+        error: 'request_id_required',
+        message: 'Identificador da consulta ausente ou inválido.',
+      });
+    }
     if (isMasterEmail(req.email, masterEmail)) {
       req.usage = { unlimited: true };
+      req.quotaReservation = { unlimited: true };
       return next();
     }
     if (!firestore) {
@@ -101,23 +125,47 @@ function createUsageLimit({
       });
     }
 
-    const day = getSaoPauloDay(now());
+    const reservationTime = now();
+    const day = getSaoPauloDay(reservationTime);
     const ref = firestore.collection('usage').doc(`${req.uid}_${day}`);
-    let used = 0;
+    const nowMs = reservationTime.getTime();
+    let confirmed = 0;
     try {
       await firestore.runTransaction(async transaction => {
         const snapshot = await transaction.get(ref);
-        const current = snapshot.exists ? Number(snapshot.data()?.count || 0) : 0;
-        if (current >= dailyLimit) {
-          const error = new Error('daily_limit_reached');
-          error.code = 'daily_limit_reached';
-          throw error;
+        const data = snapshot.exists ? snapshot.data() : {};
+        confirmed = Number(data?.confirmed ?? data?.count ?? 0);
+        const requests = cleanExpiredReservations(data?.requests, nowMs);
+        const existing = requests[requestId];
+
+        if (existing?.state === 'confirmed') return;
+        if (existing?.state === 'reserved') {
+          requests[requestId] = {
+            ...existing,
+            attempts: Number(existing.attempts || 1) + 1,
+            expiresAtMs: nowMs + reservationTtlMs,
+          };
+        } else {
+          const activeReservations = Object.values(requests)
+            .filter(entry => entry?.state === 'reserved').length;
+          if (confirmed + activeReservations >= dailyLimit) {
+            const error = new Error('daily_limit_reached');
+            error.code = 'daily_limit_reached';
+            throw error;
+          }
+          requests[requestId] = {
+            state: 'reserved',
+            attempts: 1,
+            createdAtMs: nowMs,
+            expiresAtMs: nowMs + reservationTtlMs,
+          };
         }
-        used = current + 1;
+
         transaction.set(ref, {
           uid: req.uid,
           day,
-          count: fieldValue.increment(1),
+          confirmed,
+          requests,
           updatedAt: fieldValue.serverTimestamp(),
         }, { merge: true });
       });
@@ -126,20 +174,87 @@ function createUsageLimit({
         return res.status(429).json({
           error: 'rate_limit',
           message: 'Limite diário de consultas atingido. Libera à meia-noite.',
-          used: dailyLimit,
+          used: confirmed,
           limit: dailyLimit,
         });
       }
-      console.error(`Usage limit failed for uid=${req.uid}:`, error.message);
+      console.error(`Usage reservation failed for uid=${req.uid}:`, error.message);
       return res.status(503).json({
         error: 'usage_unavailable',
         message: 'Controle de consultas temporariamente indisponível. Tente novamente.',
       });
     }
 
-    req.usage = { used, limit: dailyLimit, remaining: dailyLimit - used };
+    req.usage = { used: confirmed, limit: dailyLimit, remaining: dailyLimit - confirmed };
+    req.quotaReservation = {
+      firestore,
+      fieldValue,
+      ref,
+      requestId,
+      dailyLimit,
+      now,
+    };
     return next();
   };
+}
+
+async function confirmUsage(reservation) {
+  if (reservation?.unlimited) return { unlimited: true };
+  const { firestore, fieldValue, ref, requestId, dailyLimit, now } = reservation;
+  let confirmed = 0;
+  await firestore.runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    const data = snapshot.exists ? snapshot.data() : {};
+    confirmed = Number(data?.confirmed ?? data?.count ?? 0);
+    const requests = cleanExpiredReservations(data?.requests, now().getTime());
+    const existing = requests[requestId];
+    if (existing?.state === 'confirmed') return;
+    if (existing?.state !== 'reserved') {
+      const error = new Error('usage_reservation_expired');
+      error.code = 'usage_reservation_expired';
+      throw error;
+    }
+
+    confirmed += 1;
+    requests[requestId] = {
+      state: 'confirmed',
+      confirmedAtMs: now().getTime(),
+    };
+    transaction.set(ref, {
+      confirmed,
+      requests,
+      updatedAt: fieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+  return { used: confirmed, limit: dailyLimit, remaining: dailyLimit - confirmed };
+}
+
+async function releaseUsage(reservation) {
+  if (!reservation || reservation.unlimited) {
+    return reservation?.unlimited ? { unlimited: true } : null;
+  }
+  const { firestore, fieldValue, ref, requestId, dailyLimit, now } = reservation;
+  let confirmed = 0;
+  await firestore.runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    const data = snapshot.exists ? snapshot.data() : {};
+    confirmed = Number(data?.confirmed ?? data?.count ?? 0);
+    const requests = cleanExpiredReservations(data?.requests, now().getTime());
+    const existing = requests[requestId];
+    if (existing?.state !== 'reserved') return;
+
+    const attempts = Number(existing.attempts || 1);
+    if (attempts > 1) {
+      requests[requestId] = { ...existing, attempts: attempts - 1 };
+    } else {
+      delete requests[requestId];
+    }
+    transaction.set(ref, {
+      requests,
+      updatedAt: fieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+  return { used: confirmed, limit: dailyLimit, remaining: dailyLimit - confirmed };
 }
 
 function isProviderRateLimit(error) {
@@ -327,6 +442,10 @@ app.get('/providers', (req, res) => {
 app.post('/chat', requireAuth, requireUsage, async (req, res) => {
   const t0 = Date.now();
   const wantsStream = (req.headers.accept || '').includes('text/event-stream');
+  let clientDisconnected = false;
+  res.on('close', () => {
+    if (!res.writableEnded) clientDisconnected = true;
+  });
 
   if (wantsStream) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -337,7 +456,9 @@ app.post('/chat', requireAuth, requireUsage, async (req, res) => {
   }
 
   const sendDelta = (text) => {
-    if (wantsStream && !res.destroyed) res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+    if (wantsStream && !res.destroyed && !res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+    }
   };
   if (wantsStream) {
     res.write(`data: ${JSON.stringify({ type: 'usage', ...req.usage })}\n\n`);
@@ -387,15 +508,29 @@ app.post('/chat', requireAuth, requireUsage, async (req, res) => {
       throw new Error(`Unknown provider: ${provider}`);
     }
 
+    if (clientDisconnected || res.destroyed) {
+      const error = new Error('client_disconnected_before_completion');
+      error.code = 'client_disconnected';
+      throw error;
+    }
+
+    req.usage = await confirmUsage(req.quotaReservation);
     console.log(JSON.stringify({ provider, ms: Date.now()-t0, chars: fullText.length, foundInManual }));
 
     if (wantsStream) {
+      res.write(`data: ${JSON.stringify({ type: 'usage', ...req.usage })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'done', foundInManual })}\n\n`);
       res.end();
     } else {
       res.json({ content: [{ text: fullText }], foundInManual, usage: req.usage });
     }
   } catch (err) {
+    let usageAfterRelease = req.usage;
+    try {
+      usageAfterRelease = await releaseUsage(req.quotaReservation) || usageAfterRelease;
+    } catch (releaseError) {
+      console.error(`Usage release failed for uid=${req.uid}:`, releaseError.message);
+    }
     const providerRateLimit = isProviderRateLimit(err);
     const status = providerRateLimit ? 429 : 500;
     const error = providerRateLimit ? 'provider_rate_limit' : 'provider_error';
@@ -404,10 +539,13 @@ app.post('/chat', requireAuth, requireUsage, async (req, res) => {
       : err.message;
     console.error(`chat error status=${err.status || err.statusCode || status}:`, err.message);
     if (wantsStream) {
-      res.write(`data: ${JSON.stringify({ type: 'error', error, message })}\n\n`);
-      res.end();
+      if (!res.destroyed && !res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'usage', ...usageAfterRelease })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', error, message })}\n\n`);
+        res.end();
+      }
     } else {
-      res.status(status).json({ error, message });
+      res.status(status).json({ error, message, usage: usageAfterRelease });
     }
   }
 });
